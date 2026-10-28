@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-bridge-local"
+version = "0.1.0"
+description = "Local coordination server for cooperating coding agents"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+readme = "README.md"
+dependencies = []
+
+[project.scripts]
+agent-bridge = "agent_bridge.server:main"
+bridge = "agent_bridge.cli:main"
+
+[tool.setuptools.package-data]
+agent_bridge = ["dashboard.html"]
+
+[tool.setuptools.packages.find]
+include = ["agent_bridge*"]
