@@ -6,7 +6,7 @@ Run a shared control room for coding agents: persistent messages, visible execut
 
 ## The problem
 
-You run Browser agent for browser validation while another coding agent refactors the application. Each sees its own conversation, but neither knows what the other is editing or when a handoff is ready. Copying messages manually loses context. Simultaneous edits and commits can undo work, and a crashed agent can leave an ambiguous task behind.
+You run one agent for browser validation while another coding agent refactors the application. Each sees its own conversation, but neither knows what the other is editing or when a handoff is ready. Copying messages manually loses context. Simultaneous edits and commits can undo work, and a crashed agent can leave an ambiguous task behind.
 
 ## The solution
 
@@ -69,8 +69,8 @@ Give each tool permission to call the CLI in the same checkout (or set an absolu
 Examples:
 
 ```bash
-python3 -m agent_bridge.cli register --agent browser-agent --data '{"name":"Browser agent browser agent"}'
-python3 -m agent_bridge.cli register --agent refactor-agent --data '{"name":"Refactoring agent refactoring agent"}'
+python3 -m agent_bridge.cli register --agent browser-agent --data '{"name":"Browser validation agent"}'
+python3 -m agent_bridge.cli register --agent refactor-agent --data '{"name":"Architecture refactoring agent"}'
 python3 -m agent_bridge.cli task --agent browser-agent --data '{"title":"Refactor authentication","resource":"repo/src/auth"}'
 # Replace TASK_ID with the returned id.
 python3 -m agent_bridge.cli claim --agent refactor-agent --data '{"id":"TASK_ID","ttl":300}'
