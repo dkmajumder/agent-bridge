@@ -24,24 +24,34 @@ class Store:
         self.db.commit()
 
     def apply(self, action, data, actor):
+        # SQLite, rather than only a Python mutex, arbitrates independent connections.
+        with self.lock, self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            return self._apply(action, data, actor)
+
+    def _apply(self, action, data, actor):
         with self.lock:
             state = json.loads(self.db.execute('SELECT value FROM state WHERE id=1').fetchone()[0])
             now = time.time()
             if action == 'snapshot':
-                return state
+                # Present expired claims as available without erasing fencing history.
+                for task in state['tasks'].values():
+                    if task['status'] == 'running' and task['lease_until'] <= now:
+                        task.update(status='queued', owner=None, lease_until=0, token_hash=None)
+                return public(state)
             if action == 'register':
-                state['agents'][actor] = dict(name=data.get('name', actor), status='online', heartbeat=now)
+                state['agents'][actor] = dict(name=optional_text(data, 'name', actor), status='online', heartbeat=now)
                 result = state['agents'][actor]
             elif action == 'heartbeat':
                 if actor not in state['agents']:
                     raise ValueError('Register this agent first')
-                state['agents'][actor].update(heartbeat=now, status=data.get('status', 'online'))
+                state['agents'][actor].update(heartbeat=now, status=optional_text(data, 'status', 'online'))
                 result = state['agents'][actor]
             elif action == 'message':
-                result = dict(id=uuid.uuid4().hex, sender=actor, recipient=data.get('recipient', '*'), body=required(data, 'body'), timestamp=now)
+                result = dict(id=uuid.uuid4().hex, sender=actor, recipient=optional_text(data, 'recipient', '*'), body=required(data, 'body'), timestamp=now)
                 state['messages'].append(result)
             elif action == 'task':
-                result = dict(id=uuid.uuid4().hex, title=required(data, 'title'), resource=required(data, 'resource'), status='queued', owner=None, lease_until=0, fence=0, token_hash=None, created_by=actor)
+                result = dict(id=uuid.uuid4().hex, title=required(data, 'title'), resource=canonical_resource(required(data, 'resource')), status='queued', owner=None, lease_until=0, fence=0, token_hash=None, created_by=actor)
                 state['tasks'][result['id']] = result
             elif action in ('claim', 'renew', 'complete', 'release'):
                 task = state['tasks'].get(required(data, 'id'))
@@ -88,6 +98,20 @@ def required(data, key):
         raise ValueError(f'{key} must be a non-empty string, max 8000 characters')
     return value.strip()
 
+def optional_text(data, key, default):
+    return required(data, key) if key in data else default
+
+def canonical_resource(value):
+    if value.startswith('/') or '\\' in value or ':' in value:
+        raise ValueError('resource must be a relative slash-separated coordination key')
+    parts = value.split('/')
+    if '..' in parts:
+        raise ValueError('resource cannot contain parent traversal (..)')
+    result = '/'.join(p for p in parts if p not in ('', '.'))
+    if not result:
+        raise ValueError('resource must identify a resource')
+    return result
+
 def lease(data):
     value = data.get('ttl', 300)
     if not isinstance(value, int) or isinstance(value, bool) or not 5 <= value <= 3600:
@@ -101,6 +125,9 @@ def make_server(port=8765, database='bridge.sqlite', token=None):
     store = Store(database)
     token = token or secrets.token_urlsafe(32)
     class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(10)
         def log_message(self, *args):
             pass
         def reply(self, status, value):
@@ -133,7 +160,7 @@ def make_server(port=8765, database='bridge.sqlite', token=None):
             origin = self.headers.get('Origin')
             if origin and origin not in (f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'):
                 return False
-            return secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer '+token)
+            return secrets.compare_digest(self.headers.get('Authorization', '').encode('utf-8'), ('Bearer '+token).encode('utf-8'))
         def do_POST(self):
             if not self.authorized():
                 return self.reply(401, dict(error='Unauthorized'))

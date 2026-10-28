@@ -16,8 +16,8 @@ This is a cooperative coordination layer: agents must consult it and obey leases
 
 ```mermaid
 flowchart LR
-  A[Browser agent / browser agent] -->|CLI or HTTP| B[Agent Bridge · loopback]
-  C[a refactoring agent / refactoring agent] -->|CLI or HTTP| B
+  A[Browser validation agent] -->|CLI or HTTP| B[Agent Bridge · loopback]
+  C[Architecture refactoring agent] -->|CLI or HTTP| B
   D[Dashboard] -->|Authenticated polling| B
   B --> E[(SQLite · shared state)]
 ```
@@ -84,6 +84,35 @@ Use `release` instead of `complete` to return work to the queue. A task's fence 
 
 Set `AGENT_BRIDGE_AGENT`, `AGENT_BRIDGE_URL`, and `AGENT_BRIDGE_TOKEN_FILE` to customize CLI defaults. The CLI accepts loopback HTTP destinations only. The server supports `--port 8765 --data-dir .agent-bridge`. Run **one server per data directory**.
 
+## Python integration and private lease input
+
+Use the client from the repository root or after installing the package:
+
+```python
+from agent_bridge.client import BridgeClient, BridgeError
+
+client = BridgeClient("refactor-agent", token_file=".agent-bridge/token")
+client.call("register", name="Refactoring worker")
+task = client.call("task", title="Refactor authentication", resource="repo/src/auth")
+claim = client.call("claim", id=task["id"], ttl=300)
+# Save claim["lease_token"] privately; never send it in a handoff message.
+# Only edit after the claim succeeds. For long jobs, renew before the deadline.
+try:
+    client.call("renew", id=task["id"], lease_token=claim["lease_token"])
+    # Perform the authorized edit here; stop if renewal fails.
+    client.call("complete", id=task["id"], lease_token=claim["lease_token"])
+except BridgeError:
+    # Do not continue writing or integrating work after lease loss.
+    raise
+```
+
+For CLI automation, prefer `--data-file /private/path/request.json` or
+`--data-file -` (read JSON from stdin) when sending lease tokens. This avoids
+putting them in shell history or command-line process listings. `--data` is
+still supported for simple non-secret fields. The client disables environment
+proxies and refuses redirects to prevent forwarding local bearer credentials.
+It does not renew automatically: each participating agent must manage its lease.
+
 ## Protocol v1
 
 All `/api/*` requests require `Authorization: Bearer <local-token>`. POST bodies are JSON objects with an `agent` string. GET `/health` is public and returns only service status. GET `/` serves the dashboard.
@@ -100,14 +129,14 @@ All `/api/*` requests require `Authorization: Bearer <local-token>`. POST bodies
 | POST | `/api/release` | `id`, `lease_token` | Queued task |
 | POST | `/api/complete` | `id`, `lease_token` | Completed task |
 
-Responses are JSON. Errors: 400 invalid input, 401 authentication/origin/host failure, 404 unknown GET route, 409 lease conflict, 413 oversized body. No CORS is enabled. Resource keys use canonical case-sensitive names such as `repo/src/auth`; filesystem paths are not resolved. Choose one shared naming convention; aliases, `..`, symlinks, and case variants do not create automatic filesystem locks.
+Responses are JSON. Errors: 400 invalid input, 401 authentication/origin/host failure, 404 unknown GET route, 409 lease conflict, 413 oversized body. No CORS is enabled. Resource keys use case-sensitive names such as `repo/src/auth`. Repeated slashes, `.` segments and trailing slashes are normalized; `..`, absolute keys, backslashes and drive prefixes are rejected. Filesystem paths and symlinks are not resolved. Choose one shared naming convention; case variants and symlink aliases still require care.
 
 ## Security and operational boundaries
 
 - Binds to `127.0.0.1` only. API checks Host, Origin, and a cryptographically random bearer token. No cloud calls, telemetry, model keys, or command execution.
 - Creates a private data directory (0700) and token file (0600) on POSIX systems. Never commit tokens or runtime state. These paths are ignored by Git.
 - Shared-token trust model: any token holder can read all messages and submit an agent name. Names and recipients are coordination labels, **not isolated identities or private inboxes**. Lease tokens protect transitions but do not sandbox participants. Use only mutually trusted local agents.
-- Claims and state changes are serialized within one server process and committed to SQLite. One server per database is required. No high-availability or remote deployment is supported.
+- Claims and state changes use SQLite `BEGIN IMMEDIATE` transactions, including across independent database connections. Run one server per data directory for a consistent endpoint and token. No high-availability or remote deployment is supported.
 - The dashboard renders user text as text, not HTML. It polls every 2.5 seconds; it does not stream events. Agent entries become visually stale after 60 seconds without heartbeat.
 - A lease only protects cooperating clients. Use worktrees, review, and normal Git conflict handling. Fencing is exposed for clients; it is not enforced by external filesystems or Git.
 - Messages/events retain the newest 2,000 records. Tasks and agents are not automatically purged. Back up the data directory while the server is stopped. Rotate the token by stopping the server, removing only the token file, and restarting.
@@ -118,11 +147,12 @@ Responses are JSON. Errors: 400 invalid input, 401 authentication/origin/host fa
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover HTTP workflow, authentication, cross-origin and Host rejection, concurrent claim contention, overlapping resources, expiry, ownership tokens, fencing, validation, and persistence. GitHub Actions runs tests and package installation on Python 3.9, 3.12, and 3.13.
+The 12 tests cover HTTP workflow, authentication, cross-origin and Host rejection, concurrent claims across independent SQLite connections, resource normalization, expiry, ownership tokens, fencing, validation, persistence, redirect credential protection, and independent worker processes editing and committing files in a temporary Git repository. See [validation evidence](docs/validation.md). GitHub Actions runs tests and package installation on Python 3.9, 3.12, and 3.13.
 
 ```
 agent_bridge/server.py       HTTP service, SQLite state and lease engine
 agent_bridge/cli.py          Model-independent CLI
+agent_bridge/client.py       Importable client; loopback only, no proxies or redirects
 agent_bridge/dashboard.html Browser control room
 examples/two_agents.py      End-to-end HTTP demonstration
 tests/test_bridge.py        Integration and concurrency tests
@@ -130,7 +160,7 @@ tests/test_bridge.py        Integration and concurrency tests
 
 ## Project status
 
-Working local MVP, version 0.1.0. Future work could add per-agent credentials, MCP adapters, structured Git integration, pagination, and retention controls. No official OpenAI or Anthropic affiliation, approval, or endorsement is claimed. The project demonstrates a model-independent approach to collaborative agent workflows.
+Working local MVP, version 0.2.0. Future work could add per-agent credentials, MCP adapters, structured Git integration, pagination, and retention controls. No official OpenAI or Anthropic affiliation, approval, or endorsement is claimed. The project demonstrates a model-independent approach to collaborative agent workflows.
 
 Contributions are welcome: describe the problem, add a focused regression test, and submit a pull request. See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
